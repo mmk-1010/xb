@@ -79,8 +79,7 @@ class Plugin extends AbstractPlugin implements PaymentInterface
 
     public function notify($params): array|bool
     {
-        $secret = $this->getConfig('key');
-        if (!is_string($secret) || trim($secret) === '' || !is_array($params)) {
+        if (!is_array($params)) {
             return false;
         }
         foreach ($params as $value) {
@@ -88,31 +87,44 @@ class Plugin extends AbstractPlugin implements PaymentInterface
                 return false;
             }
         }
-        if (!is_string($params['sign'] ?? null)
-            || !is_string($params['out_trade_no'] ?? null) || trim($params['out_trade_no']) === ''
-            || !is_string($params['trade_no'] ?? null) || trim($params['trade_no']) === '') {
+        foreach (['sign', 'pid', 'trade_status', 'out_trade_no', 'trade_no', 'money'] as $field) {
+            if (!isset($params[$field]) || (string) $params[$field] === '') {
+                return false;
+            }
+        }
+        if (!is_string($params['sign']) || !preg_match('/\A[0-9a-fA-F]{32}\z/', $params['sign'])) {
             return false;
         }
-        $pid = $this->getConfig('pid');
-        if ((!is_string($pid) && !is_int($pid)) || trim((string) $pid) === ''
-            || (string) ($params['pid'] ?? '') !== (string) $pid
-            || ($params['trade_status'] ?? null) !== 'TRADE_SUCCESS'
-            || ($params['sign_type'] ?? 'MD5') !== 'MD5') {
+        if (isset($params['sign_type']) && $params['sign_type'] !== 'MD5') {
+            return false;
+        }
+        if ($params['trade_status'] !== 'TRADE_SUCCESS' ||
+            (string) $params['pid'] !== (string) $this->getConfig('pid') ||
+            !$this->getConfig('key')) {
+            return false;
+        }
+        // Convert decimal currency to cents without rounding untrusted input.
+        if (!preg_match('/\A(\d{1,10})(?:\.(\d{1,2}))?\z/', (string) $params['money'], $amount)) {
+            return false;
+        }
+        $totalAmount = (int) $amount[1] * 100 + (int) str_pad($amount[2] ?? '', 2, '0');
+        if ($totalAmount <= 0) {
             return false;
         }
 
         $sign = $params['sign'];
         unset($params['sign'], $params['sign_type']);
         ksort($params);
-        $str = stripslashes(urldecode(http_build_query($params))) . $secret;
+        $str = stripslashes(urldecode(http_build_query($params))) . $this->getConfig('key');
 
-        if (!hash_equals(md5($str), $sign)) {
+        if (!hash_equals(md5($str), strtolower($sign))) {
             return false;
         }
 
         return [
-            'trade_no' => $params['out_trade_no'],
-            'callback_no' => $params['trade_no']
+            'trade_no' => (string) $params['out_trade_no'],
+            'callback_no' => (string) $params['trade_no'],
+            'total_amount' => $totalAmount,
         ];
     }
 }
